@@ -1,0 +1,74 @@
+name: $(version.major).$(version.minor).$(version.patch)-$(Rev:.r)
+
+variables:
+  - group: tools.containers.logforwarder
+  - name: version.major # Update version variables following
+    value: 1
+  - name: version.minor # Semantic Versioning practices:
+    value: 0
+  - name: version.patch # https://semver.org/spec/v2.0.0.html
+    value: 0
+
+pool: $(ado.agentpool.name)
+
+trigger:
+  branches:
+    include:
+      - "master"
+
+pr: none
+
+stages:
+  - stage: "Checkout"
+    displayName: "Checkout"
+    jobs:
+      - job: Clean
+        displayName: "Cleanup"
+        workspace:
+          clean: all
+        steps:
+          - checkout: none
+      - job: Auth
+        displayName: Authenticate to gcr.io
+        dependsOn:
+          - Clean
+        steps:
+          - checkout: none
+          - bash: |
+              credCount=$(ls $HOME/.docker/config.json | wc -l | awk '{$1=$1;print}')
+              echo '##vso[task.setvariable variable=credentialsExist]$credCount'
+            displayName: "Check if Docker Credentials Exist"
+          - bash: |
+              echo 'setting docker credentials'
+              gcloud auth configure-docker
+            displayName: "Configure Docker Credentials if not exist"
+            condition: eq(variables.credentialsExist, 0)
+      - job: BuildPublish
+        displayName: "Build & Publish Log Forwarder Container Image"
+        dependsOn:
+          - Clean
+          - Auth
+        variables:
+          repository_url: $(gcp.artifacts.location)-docker.pkg.dev/$(gcp.artifacts.project)/$(gcp.artifacts.repository)
+          image_url: $(respository_url)/$(docker.container.name)
+        steps:
+          - task: Docker@2
+            displayName: "Build Log Forwarder Image"
+            inputs:
+              repository: $(image_url)
+              command: buildAndPush
+              Dockerfile: $(Build.SourcesDirectory)/src/Dockerfile
+              tags: |
+                $(Build.BuildId)
+                $(version.major).$(version.minor).$(version.patch)
+                $(Build.SourceBranchName)
+                latest
+          - bash: |
+              env
+              set -eux
+              echo $(image_url):$(Build.BuildId) > $(Pipeline.Workspace)/image_ref
+            displayName: "Tag container"
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: "$(Pipeline.Workspace)/image_ref"
+              artifactName: $(gcp.artifacts.image_ref)
