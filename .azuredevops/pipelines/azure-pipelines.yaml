@@ -1,4 +1,4 @@
-name: $(version.major).$(version.minor).$(version.patch)-$(Rev:.r)
+name: $(version.major).$(version.minor).$(version.patch)-rev$(Rev:.r)
 
 variables:
   - group: tools.containers.logforwarder
@@ -7,7 +7,9 @@ variables:
   - name: version.minor # Semantic Versioning practices:
     value: 0
   - name: version.patch # https://semver.org/spec/v2.0.0.html
-    value: 0
+    value: 1
+  - name: repository_url
+    value: $(gcp.artifacts.location)-docker.pkg.dev/$(gcp.artifacts.project)/$(gcp.artifacts.repository)
 
 pool: $(ado.agentpool.name)
 
@@ -29,28 +31,36 @@ stages:
         steps:
           - checkout: none
       - job: Auth
-        displayName: Authenticate to gcr.io
+        displayName: Verify Docker Auth
         dependsOn:
           - Clean
         steps:
           - checkout: none
           - bash: |
-              credCount=$(ls $HOME/.docker/config.json | wc -l | awk '{$1=$1;print}')
-              echo '##vso[task.setvariable variable=credentialsExist]$credCount'
+              FILE=$HOME/.docker/config.json
+              if [ -f "$FILE" ]; then
+                echo "Test if Artifacts Auth Config exists"
+                credentialsExists=$(cat $FILE | jq '.credHelpers' | jq 'has("$REPOSITORY")')
+              else
+                echo "No Auth Config file present"
+                credentialsExists=False
+              fi
+              echo '##vso[task.setvariable variable=credentialsExist]$credentialsExists'
             displayName: "Check if Docker Credentials Exist"
+            env:
+              REPOSITORY: $(gcp.artifacts.location)-docker.pkg.dev
           - bash: |
               echo 'setting docker credentials'
-              gcloud auth configure-docker
+              gcloud auth configure-docker europe-docker.pkg.dev --quiet
             displayName: "Configure Docker Credentials if not exist"
-            condition: eq(variables.credentialsExist, 0)
+            condition: eq(lower(variables.credentialsExist), 'false')
       - job: BuildPublish
         displayName: "Build & Publish Log Forwarder Container Image"
         dependsOn:
           - Clean
           - Auth
         variables:
-          repository_url: $(gcp.artifacts.location)-docker.pkg.dev/$(gcp.artifacts.project)/$(gcp.artifacts.repository)
-          image_url: $(respository_url)/$(docker.container.name)
+          image_url: $(repository_url)/$(docker.container.name)
         steps:
           - task: Docker@2
             displayName: "Build Log Forwarder Image"
